@@ -6,7 +6,9 @@ import (
 	"io/ioutil"
 	"log"
 	"net"
+	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	//	"time"
 )
@@ -21,12 +23,18 @@ type Config struct {
 	// ip and udp port to receive data; requests about flows properties will be served from port 80
 	ReceiveIP   string
 	ReceivePort int
+	HttpIP      string
+	HttpPort    int
 }
 
 var config Config
+
+// ports default values comes from T9 keyboard and words "flow" and "meter" (port 63837 is over 49151 and thus not very compliant but it works and nice)
 var defaultConfig = []byte(`{
     "receiveIP": "127.0.0.1",
-    "receivePort": 3569
+    "receivePort": 3569,
+    "httpIP": "127.0.0.1",
+    "httpPort": 63837
 }`)
 
 func _init() {
@@ -64,7 +72,7 @@ func _init() {
 func main() {
 	_init()
 
-	logger.Print("Start")
+	logger.Print("flowmeter starting...")
 
 	// bind to ports
 	// data receiver
@@ -80,18 +88,38 @@ func main() {
 		os.Exit(1)
 	}
 	defer udpConn.Close()
-	logger.Printf("listening on udp port %d", config.ReceivePort)
-	for {
-		receiveData(logger, udpConn)
-	}
-	// requests server
+	logger.Printf("listening udp on %s:%d", config.ReceiveIP, config.ReceivePort)
+	// wrap infinite loop into func and send it to goroutine to be able to also listen http port
+	go func() {
+		for {
+			receiveData(logger, udpConn)
+		}
+	}()
+	// requests server (HTTP)
+	// without wrapping in goroutine, http.ListenAndServe block unless there are error, so I can't log about listening http
+	go func() {
+		http.HandleFunc("/", httpStatus)
+		http.HandleFunc("/status", httpStatus)
+		http.HandleFunc("/meter", httpMeter)
+		err = http.ListenAndServe(config.HttpIP+":"+fmt.Sprintf("%d", config.HttpPort), nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "can't start http server: %v\n", err)
+			os.Exit(1)
+		}
+	}()
+	logger.Printf("listening http on %s:%d", config.HttpIP, config.HttpPort)
 
-	logger.Print("End")
+	// manual blocking to prevent program from ending
+	for {
+		runtime.Gosched()
+	}
+
+	logger.Print("flowmeter stopped")
 }
 
 func receiveData(logger *log.Logger, conn *net.UDPConn) {
 	// 3 seconds read timeout. Any Read call after given time will return with error.
-	// NB: we shouldn't use timeout for network daemons, we should block until some data arrives
+	// FIX: we shouldn't use timeout for network daemons, we should block until some data arrives
 	//conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 
 	var payload [512]byte // max payload size. UDP by itself allows packets up to 64k bytes
@@ -113,4 +141,12 @@ func receiveData(logger *log.Logger, conn *net.UDPConn) {
 
 	// disable timeout
 	//conn.SetReadDeadline(time.Time{})
+}
+
+func httpStatus(writer http.ResponseWriter, req *http.Request) {
+	writer.Write([]byte("I'm fine, thanks!\n"))
+}
+
+func httpMeter(writer http.ResponseWriter, req *http.Request) {
+
 }
