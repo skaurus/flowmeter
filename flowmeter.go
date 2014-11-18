@@ -8,9 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"runtime"
 	"strings"
-	//	"time"
 )
 
 var logger *log.Logger
@@ -110,9 +108,7 @@ func main() {
 	logger.Printf("listening http on %s:%d", config.HttpIP, config.HttpPort)
 
 	// manual blocking to prevent program from ending
-	for {
-		runtime.Gosched()
-	}
+	select {}
 
 	logger.Print("flowmeter stopped")
 }
