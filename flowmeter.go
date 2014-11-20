@@ -15,44 +15,64 @@ var logger *log.Logger
 
 var configFile = "config.json"
 
+type flow struct {
+	Name   string
+	Expire int
+}
+type flows struct {
+	ImplicitCreate bool `json:"_implicitCreate"`
+	DefaultExpire  uint `json:"_defaultExpire"`
+	Flows          []flow
+}
+
 //var config interface{}
 // fields have to start with capital letter to be unmarshalled (marked it as public field)
 type Config struct {
-	// ip and udp port to receive data; requests about flows properties will be served from port 80
+	// ip and udp port to receive data
 	ReceiveIP   string
 	ReceivePort int
-	HttpIP      string
-	HttpPort    int
+	// ip and tcp port for answering http requests about flows properties
+	HttpIP   string
+	HttpPort int
+	// configs of different flows
+	Flows flows
 }
 
 var config Config
 
-// ports default values comes from T9 keyboard and words "flow" and "meter" (port 63837 is over 49151 and thus not very compliant but it works and nice)
+// ports default values comes from T9 keyboard and words "flow" and "meter" (port "meter"->63837 is over 49151 and thus not very compliant but it works and nice)
 var defaultConfig = []byte(`{
     "receiveIP": "127.0.0.1",
     "receivePort": 3569,
     "httpIP": "127.0.0.1",
-    "httpPort": 63837
+    "httpPort": 63837,
+    "flows": {
+        "_implicitCreate": true,
+        "_defaultExpire": 86400
+    }
 }`)
 
 func _init() {
 	// load config
+	usingDefaultConfig := false
 	var configText []byte
 	if _, err := os.Stat(configFile); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "there is no config file [%s], will use defaults\n", configFile)
+		usingDefaultConfig = true
+		//fmt.Fprintf(os.Stderr, "there is no config file [%s], will use defaults:\n%s\n", configFile, defaultConfig)
 		configText = defaultConfig
 	} else {
 		configText, err = ioutil.ReadFile(configFile)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "can't open config [%v]: %v\n", configFile, err)
+			fmt.Fprintf(os.Stderr, "can't open config [%s]: %v\n", configFile, err)
 			os.Exit(1)
 		}
 	}
 	err := json.Unmarshal(configText, &config)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "can't parse config [%v]: %v\n", configFile, err)
+		fmt.Fprintf(os.Stderr, "can't parse config [%s]: %v\n", configFile, err)
+		os.Exit(1)
 	}
-	//fmt.Printf("parsed config: %+v\n", config)
+	fmt.Printf("parsed config: %+v\n", config)
 
 	// setup logger
 	mypath := strings.Split(os.Args[0], "/")
@@ -61,10 +81,14 @@ func _init() {
 
 	logHandle, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "can't open log [%v]: %v\n", logFile, err)
+		fmt.Fprintf(os.Stderr, "can't open log [%s]: %v\n", logFile, err)
 		os.Exit(1)
 	}
 	logger = log.New(logHandle, "", log.Ldate|log.Ltime|log.Lshortfile)
+
+	if usingDefaultConfig {
+		logger.Printf("there is no config file [%s], will use defaults:\n%s", configFile, string(defaultConfig))
+	}
 }
 
 func main() {
@@ -90,7 +114,7 @@ func main() {
 	// wrap infinite loop into func and send it to goroutine to be able to also listen http port
 	go func() {
 		for {
-			receiveData(logger, udpConn)
+			receiveData(udpConn)
 		}
 	}()
 	// requests server (HTTP)
@@ -113,7 +137,7 @@ func main() {
 	logger.Print("flowmeter stopped")
 }
 
-func receiveData(logger *log.Logger, conn *net.UDPConn) {
+func receiveData(conn *net.UDPConn) {
 	// 3 seconds read timeout. Any Read call after given time will return with error.
 	// FIX: we shouldn't use timeout for network daemons, we should block until some data arrives
 	//conn.SetReadDeadline(time.Now().Add(3 * time.Second))
