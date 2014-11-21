@@ -10,20 +10,21 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var logger *log.Logger
 
 var configFile = "config.json"
 
-type flow struct {
+type flowConfig struct {
 	Name   string
 	Expire uint
 }
-type flows struct {
+type flowsConfig struct {
 	ImplicitCreate  bool `json:"_implicitCreate"`
 	DefaultExpire   uint `json:"_defaultExpire"`
-	PredefinedFlows []flow
+	PredefinedFlows []flowConfig
 }
 
 //var config interface{}
@@ -36,7 +37,7 @@ type Config struct {
 	HttpIP   string
 	HttpPort int
 	// configs of different flows
-	Flows flows
+	Flows flowsConfig
 }
 
 var config Config
@@ -58,17 +59,25 @@ type datapointsGroup struct {
 	sum   float64
 }
 
+type flowData struct {
+	datapoints []datapointsGroup
+	head       uint
+	capacity   uint
+}
+
 // here we will store incoming flow datapoints
 // keys are strings; values are arrays of datapointGroup's
-var flowData = map[string][]datapointsGroup{}
+var flowMap = map[string]flowData{}
 
 func initFlow(name string, expire uint) {
 	capacity := config.Flows.DefaultExpire
 	if expire > 0 {
 		capacity = expire
 	}
-	flowData[name] = make([]datapointsGroup, capacity)
+	flowMap[name] = flowData{datapoints: make([]datapointsGroup, capacity), head: 0, capacity: capacity}
 }
+
+var timeTicker <-chan time.Time
 
 func init() {
 	// load config
@@ -92,12 +101,6 @@ func init() {
 	}
 	//fmt.Printf("parsed config: %+v\n", config)
 
-	// preallocate predefined data arrays
-	for _, predefinedFlow := range config.Flows.PredefinedFlows {
-		initFlow(predefinedFlow.Name, predefinedFlow.Expire)
-	}
-	//fmt.Printf("flowData init value: %+v\n", flowData)
-
 	// setup logger
 	mypath := strings.Split(os.Args[0], "/")
 	myname := mypath[len(mypath)-1]
@@ -113,6 +116,26 @@ func init() {
 	if usingDefaultConfig {
 		logger.Printf("there is no config file [%s], will use defaults:\n%s", configFile, string(defaultConfig))
 	}
+
+	// preallocate predefined data arrays
+	for _, predefinedFlow := range config.Flows.PredefinedFlows {
+		initFlow(predefinedFlow.Name, predefinedFlow.Expire)
+	}
+	//fmt.Printf("flowMap init value: %+v\n", flowMap)
+
+	// init timeTicker (we store flow datapoints grouped by second; storage implemented as a ring buffer;
+	// for all this we need to do things every second)
+	timeTicker = time.Tick(1 * time.Second)
+	go func() {
+		for _ = range timeTicker {
+			//logger.Print("Tick at", t)
+			for i, _ := range flowMap {
+				fmt.Printf("%+v\n\n", flowMap[i])
+				flowMap[i].head = uint((flowMap[i].head + 1) % flowMap[i].capacity)
+				//fmt.Printf("flowMap is %+v\n", flowMap)
+			}
+		}
+	}()
 }
 
 func main() {
@@ -190,7 +213,7 @@ func receiveData(conn *net.UDPConn) {
 
 	logger.Printf("received value [%.3f] for flow [%s]", value, flowName)
 
-	if _, exists := flowData[flowName]; exists {
+	if _, exists := flowMap[flowName]; exists {
 		// ok
 	} else if config.Flows.ImplicitCreate {
 		logger.Printf("received unknown flow [%s], implicitly adding to storage with expire [%d] seconds", flowName, config.Flows.DefaultExpire)

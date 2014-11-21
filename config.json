@@ -1,0 +1,14 @@
+{
+    "receiveIP": "127.0.0.1",
+    "receivePort": 3569,
+    "httpIP": "127.0.0.1",
+    "httpPort": 63837,
+    "flows": {
+        "_implicitCreate": true,
+        "_defaultExpire": 86400,
+        "predefinedFlows": [{
+            "name": "defflow",
+            "expire": 30
+        }]
+    }
+}
