@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -17,12 +18,12 @@ var configFile = "config.json"
 
 type flow struct {
 	Name   string
-	Expire int
+	Expire uint
 }
 type flows struct {
-	ImplicitCreate bool `json:"_implicitCreate"`
-	DefaultExpire  uint `json:"_defaultExpire"`
-	Flows          []flow
+	ImplicitCreate  bool `json:"_implicitCreate"`
+	DefaultExpire   uint `json:"_defaultExpire"`
+	PredefinedFlows []flow
 }
 
 //var config interface{}
@@ -41,7 +42,7 @@ type Config struct {
 var config Config
 
 // ports default values comes from T9 keyboard and words "flow" and "meter" (port "meter"->63837 is over 49151 and thus not very compliant but it works and nice)
-var defaultConfig = []byte(`{
+const defaultConfig = `{
     "receiveIP": "127.0.0.1",
     "receivePort": 3569,
     "httpIP": "127.0.0.1",
@@ -50,16 +51,33 @@ var defaultConfig = []byte(`{
         "_implicitCreate": true,
         "_defaultExpire": 86400
     }
-}`)
+}`
 
-func _init() {
+type datapointsGroup struct {
+	count uint
+	sum   float64
+}
+
+// here we will store incoming flow datapoints
+// keys are strings; values are arrays of datapointGroup's
+var flowData = map[string][]datapointsGroup{}
+
+func initFlow(name string, expire uint) {
+	capacity := config.Flows.DefaultExpire
+	if expire > 0 {
+		capacity = expire
+	}
+	flowData[name] = make([]datapointsGroup, capacity)
+}
+
+func init() {
 	// load config
 	usingDefaultConfig := false
 	var configText []byte
 	if _, err := os.Stat(configFile); os.IsNotExist(err) {
 		usingDefaultConfig = true
 		//fmt.Fprintf(os.Stderr, "there is no config file [%s], will use defaults:\n%s\n", configFile, defaultConfig)
-		configText = defaultConfig
+		configText = []byte(defaultConfig)
 	} else {
 		configText, err = ioutil.ReadFile(configFile)
 		if err != nil {
@@ -72,7 +90,13 @@ func _init() {
 		fmt.Fprintf(os.Stderr, "can't parse config [%s]: %v\n", configFile, err)
 		os.Exit(1)
 	}
-	fmt.Printf("parsed config: %+v\n", config)
+	//fmt.Printf("parsed config: %+v\n", config)
+
+	// preallocate predefined data arrays
+	for _, predefinedFlow := range config.Flows.PredefinedFlows {
+		initFlow(predefinedFlow.Name, predefinedFlow.Expire)
+	}
+	//fmt.Printf("flowData init value: %+v\n", flowData)
 
 	// setup logger
 	mypath := strings.Split(os.Args[0], "/")
@@ -92,8 +116,6 @@ func _init() {
 }
 
 func main() {
-	_init()
-
 	logger.Print("flowmeter starting...")
 
 	// bind to ports
@@ -131,7 +153,7 @@ func main() {
 	}()
 	logger.Printf("listening http on %s:%d", config.HttpIP, config.HttpPort)
 
-	// manual blocking to prevent program from ending
+	// manual blocking to prevent program from immediately ending
 	select {}
 
 	logger.Print("flowmeter stopped")
@@ -142,10 +164,15 @@ func receiveData(conn *net.UDPConn) {
 	// FIX: we shouldn't use timeout for network daemons, we should block until some data arrives
 	//conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 
-	var payload [512]byte // max payload size. UDP by itself allows packets up to 64k bytes
+	const maxPayload = 512 // max payload size. UDP by itself allows packets up to 64k bytes
+	var payload [maxPayload + 1]byte
 	n, err := conn.Read(payload[0:])
 	if err != nil {
 		logger.Printf("udp read error: %v", err)
+		return
+	}
+	if n > maxPayload {
+		logger.Printf("payload [%v] longer than max payload size [%d], rejecting", string(payload[0:n]), maxPayload)
 		return
 	}
 
@@ -154,10 +181,26 @@ func receiveData(conn *net.UDPConn) {
 		logger.Printf("broken udp payload [%s]", string(payload[0:n]))
 		return
 	}
-	param := data[0]
-	value := data[1]
+	flowName := data[0]
+	value, err := strconv.ParseFloat(data[1], 64)
+	if err != nil {
+		logger.Printf("can't parse value [%s] into float64: %v", data[1], err)
+		return
+	}
 
-	logger.Printf("received value [%s] for param [%s]", value, param)
+	logger.Printf("received value [%.3f] for flow [%s]", value, flowName)
+
+	if _, exists := flowData[flowName]; exists {
+		// ok
+	} else if config.Flows.ImplicitCreate {
+		logger.Printf("received unknown flow [%s], implicitly adding to storage with expire [%d] seconds", flowName, config.Flows.DefaultExpire)
+		initFlow(flowName, 0) // 0 means `use default expire value`
+	} else {
+		logger.Printf("can't store data: flow [%s] is unknown and implicit flow creation is disabled", flowName)
+		return
+	}
+
+	// proceed adding data
 
 	// disable timeout
 	//conn.SetReadDeadline(time.Time{})
