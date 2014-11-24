@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"io/ioutil"
 	"log"
 	"net"
@@ -59,6 +60,8 @@ type datapointsGroup struct {
 	sum   float64
 }
 
+// flowData type is supposed to be used as a ring buffer.
+// data stored in datapoints array, head is an active index in that array, capacity is array size.
 type flowData struct {
 	datapoints []datapointsGroup
 	head       uint
@@ -66,15 +69,64 @@ type flowData struct {
 }
 
 // here we will store incoming flow datapoints
-// keys are strings; values are arrays of datapointGroup's
-var flowMap = map[string]flowData{}
+// keys are strings; values are pointers to flowData structs
+var flowMap = map[string]*flowData{}
+
+func (fm *flowData) advanceHead() {
+	fm.head = (fm.head + 1) % fm.capacity
+	// clear previous values in now active index
+	fm.datapoints[fm.head] = datapointsGroup{}
+}
+
+func (fm *flowData) addData(point float64) {
+	fm.datapoints[fm.head].count++
+	fm.datapoints[fm.head].sum += point
+}
+
+func (fm *flowData) NLastPoints(n uint) (points []datapointsGroup) {
+	// we could get no more points than there is
+	if n > fm.capacity {
+		n = fm.capacity
+	}
+	// preallocate
+	points = make([]datapointsGroup, n)
+	// we go this way: get current point, get previous point, previous previous and so on
+	// should not forget about wrap over
+	for i := uint(0); i < n; i++ {
+		// let's generalize that. basically we need (head - i) index on every iteration;
+		// but what if that value negative? then we need to add fm.capacity to it;
+		// so let's always add it; what if head - i was positive and now we get
+		// value over capacity - 1? just do modulo division and get remainder to
+		// rid off of any "excess" capacity.
+		// (Oooh, I just tested that with Perl you can do modulo division directly on
+		//  negative numbers with same results... Keewl. But not in Go. "Go Perl!" ;))
+		index := (fm.capacity + fm.head - i) % fm.capacity
+		points[i] = fm.datapoints[index]
+	}
+	return
+}
+
+func (fm *flowData) MovingAverage(n uint) (average float64) {
+	points := fm.NLastPoints(n)
+	count, sum := uint(0), float64(0)
+	for _, point := range points {
+		count += point.count
+		sum += point.sum
+	}
+	if count == 0 {
+		average = float64(0)
+	} else {
+		average = sum / float64(count)
+	}
+	return
+}
 
 func initFlow(name string, expire uint) {
 	capacity := config.Flows.DefaultExpire
 	if expire > 0 {
 		capacity = expire
 	}
-	flowMap[name] = flowData{datapoints: make([]datapointsGroup, capacity), head: 0, capacity: capacity}
+	flowMap[name] = &flowData{datapoints: make([]datapointsGroup, capacity), head: 0, capacity: capacity}
 }
 
 var timeTicker <-chan time.Time
@@ -124,15 +176,14 @@ func init() {
 	//fmt.Printf("flowMap init value: %+v\n", flowMap)
 
 	// init timeTicker (we store flow datapoints grouped by second; storage implemented as a ring buffer;
-	// for all this we need to do things every second)
+	// for this we need to move a pointer to an active ring buffer index every second)
 	timeTicker = time.Tick(1 * time.Second)
 	go func() {
 		for _ = range timeTicker {
-			//logger.Print("Tick at", t)
-			for i, _ := range flowMap {
-				fmt.Printf("%+v\n\n", flowMap[i])
-				flowMap[i].head = uint((flowMap[i].head + 1) % flowMap[i].capacity)
-				//fmt.Printf("flowMap is %+v\n", flowMap)
+			//fmt.Println("Tick at", t)
+			for _, fm := range flowMap {
+				fm.advanceHead()
+				//fmt.Printf("%+v\n\n", fm)
 			}
 		}
 	}()
@@ -211,7 +262,7 @@ func receiveData(conn *net.UDPConn) {
 		return
 	}
 
-	logger.Printf("received value [%.3f] for flow [%s]", value, flowName)
+	//logger.Printf("received value [%.3f] for flow [%s]", value, flowName)
 
 	if _, exists := flowMap[flowName]; exists {
 		// ok
@@ -224,6 +275,8 @@ func receiveData(conn *net.UDPConn) {
 	}
 
 	// proceed adding data
+	fm := flowMap[flowName]
+	fm.addData(value)
 
 	// disable timeout
 	//conn.SetReadDeadline(time.Time{})
@@ -233,6 +286,55 @@ func httpStatus(writer http.ResponseWriter, req *http.Request) {
 	writer.Write([]byte("I'm fine, thanks!\n"))
 }
 
-func httpMeter(writer http.ResponseWriter, req *http.Request) {
+var meterTemplate = template.Must(template.New("meter").Parse(`<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <title></title>
+    </head>
+    <body>
+{{print .}}
+    </body>
+</html>`))
 
+func httpMeter(writer http.ResponseWriter, req *http.Request) {
+	flowName, windowValue := req.FormValue("flow"), req.FormValue("window")
+	if len(flowName) == 0 || len(windowValue) == 0 {
+		writer.WriteHeader(http.StatusBadRequest)
+		err := meterTemplate.Execute(writer, "flow and window are required parameters")
+		if err != nil {
+			logger.Print("template error:", err)
+		}
+		return
+	}
+
+	win, err := strconv.ParseUint(windowValue, 10, 32)
+	if err != nil {
+		logger.Printf("can't parse value [%s] into uint32: %v", windowValue, err)
+		writer.WriteHeader(http.StatusBadRequest)
+		err = meterTemplate.Execute(writer, "window is cannot be converted to uint")
+		if err != nil {
+			logger.Print("template error:", err)
+		}
+		return
+	}
+	window := uint(win)
+
+	var average float64
+	if fm, exists := flowMap[flowName]; exists {
+		average = fm.MovingAverage(window)
+		err = meterTemplate.Execute(writer, average)
+		if err != nil {
+			logger.Print("template error:", err)
+		}
+		return
+	}
+
+	writer.WriteHeader(http.StatusBadRequest)
+	err = meterTemplate.Execute(writer, "unknown flow")
+	if err != nil {
+		logger.Print("template error:", err)
+	}
+	return
 }
