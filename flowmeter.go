@@ -189,6 +189,8 @@ func init() {
 	}()
 }
 
+var chttp = http.NewServeMux()
+
 func main() {
 	logger.Print("flowmeter starting...")
 
@@ -216,8 +218,11 @@ func main() {
 	// requests server (HTTP)
 	// without wrapping in goroutine, http.ListenAndServe block unless there are error, so I can't log about listening http
 	go func() {
+		// handle everything not handled by others
 		http.HandleFunc("/", httpStatus)
-		http.HandleFunc("/status", httpStatus)
+		// serve static
+		chttp.Handle("/", http.FileServer(http.Dir("./public/")))
+		// flow requests
 		http.HandleFunc("/meter", httpMeter)
 		err = http.ListenAndServe(config.HttpIP+":"+fmt.Sprintf("%d", config.HttpPort), nil)
 		if err != nil {
@@ -283,7 +288,11 @@ func receiveData(conn *net.UDPConn) {
 }
 
 func httpStatus(writer http.ResponseWriter, req *http.Request) {
-	writer.Write([]byte("I'm fine, thanks!\n"))
+	if _, err := os.Stat("./public/" + req.URL.Path); os.IsNotExist(err) {
+		writer.Write([]byte("I'm fine, thanks!\n"))
+	} else {
+		chttp.ServeHTTP(writer, req)
+	}
 }
 
 var meterHTMLTemplate = template.Must(template.New("meter").Parse(`<!doctype html>
@@ -292,9 +301,85 @@ var meterHTMLTemplate = template.Must(template.New("meter").Parse(`<!doctype htm
         <meta charset="utf-8">
         <meta http-equiv="X-UA-Compatible" content="IE=edge">
         <title></title>
+        <script src="/js/jquery-2.1.1.min.js"></script>
+        <script src="/js/highcharts-4.0.4-custom.js"></script>
     </head>
     <body>
-{{print .}}
+{{if .Error}}
+    {{print .Error}}
+{{else}}
+        <div id="container" style="width:700px; height:400px;"></div>
+        <script type="text/javascript">
+var interval;
+$(document).ready(function () {
+    Highcharts.setOptions({
+        global: {
+            useUTC: false
+        }
+    });
+
+    $('#container').highcharts({
+        chart: {
+            type: 'spline',
+            animation: Highcharts.svg, // don't animate in old IE
+            marginRight: 10,
+            events: {
+                load: function () {
+                    // set up the updating of the chart each second
+                    var series = this.series[0];
+                    interval = setInterval(function () {
+                        $.ajax({
+                            'url': '/meter',
+                            'data': {
+                                'flow': '{{.FlowName}}',
+                                'window': '{{.Window}}',
+                                'format': 'json'
+                            },
+                            'timeout': 200, // ms
+                            'error': function () {},
+                            'success': function (data) {
+                                if (data.Success) {
+                                    series.addPoint([(new Date()).getTime(), data.Data.Average], true, true)
+                                } else {
+                                    console.log(data.Data.Error)
+                                }
+                            }
+                        });
+                    }, 1000);
+                }
+            }
+        },
+        title: {
+            text: 'flow {{.FlowName}} moving average for {{.Window}} seconds'
+        },
+        xAxis: {
+            type: 'datetime',
+            tickPixelInterval: 50
+        },
+        yAxis: {
+            title: {
+                text: 'seconds'
+            },
+            floor: 0
+        },
+        series: [{
+            data: (function () {
+                var data = [],
+                    time = (new Date()).getTime();
+                for (var i = -49; i <= 0; i++) {
+                    data.push({
+                        x: time + i*1000,
+                        y: 0
+                    });
+                }
+                data.push({x: time, y: {{.Average}}});
+                return data
+            }())
+        }]
+    });
+});
+        </script>
+{{end}}
     </body>
 </html>`))
 
@@ -334,14 +419,14 @@ func httpMeter(writer http.ResponseWriter, req *http.Request) {
 
 	flowName, windowValue := req.FormValue("flow"), req.FormValue("window")
 	if len(flowName) == 0 || len(windowValue) == 0 {
-		templateData.Data = "flow and window are required parameters"
+		templateData.Data = struct{ Error string }{"flow and window are required parameters"}
 		return
 	}
 
 	win, err := strconv.ParseUint(windowValue, 10, 32)
 	if err != nil {
 		logger.Printf("can't parse value [%s] into uint32: %v", windowValue, err)
-		templateData.Data = "window is cannot be converted to uint"
+		templateData.Data = struct{ Error string }{"window is cannot be converted to uint"}
 		return
 	}
 	window := uint(win)
@@ -349,10 +434,16 @@ func httpMeter(writer http.ResponseWriter, req *http.Request) {
 	if fm, exists := flowMap[flowName]; exists {
 		average := fm.MovingAverage(window)
 		templateData.Success = true
-		templateData.Data = average
+		templateData.Data = struct {
+			Error    string
+			Average  float64
+			FlowName string
+			Window   uint
+		}{"", average, flowName, window}
+		logger.Printf("%+v", templateData.Data)
 		return
 	}
 
-	templateData.Data = "unknown flow"
+	templateData.Data = struct{ Error string }{"unknown flow"}
 	return
 }
