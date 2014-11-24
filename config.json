@@ -4,11 +4,10 @@
     "httpIP": "127.0.0.1",
     "httpPort": 63837,
     "flows": {
-        "_implicitCreate": true,
+        "_implicitCreate": false,
         "_defaultExpire": 86400,
         "predefinedFlows": [{
-            "name": "defflow",
-            "expire": 30
+            "name": "surflatency"
         }]
     }
 }
