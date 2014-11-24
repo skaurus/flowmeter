@@ -286,7 +286,7 @@ func httpStatus(writer http.ResponseWriter, req *http.Request) {
 	writer.Write([]byte("I'm fine, thanks!\n"))
 }
 
-var meterTemplate = template.Must(template.New("meter").Parse(`<!doctype html>
+var meterHTMLTemplate = template.Must(template.New("meter").Parse(`<!doctype html>
 <html lang="en">
     <head>
         <meta charset="utf-8">
@@ -299,42 +299,60 @@ var meterTemplate = template.Must(template.New("meter").Parse(`<!doctype html>
 </html>`))
 
 func httpMeter(writer http.ResponseWriter, req *http.Request) {
-	flowName, windowValue := req.FormValue("flow"), req.FormValue("window")
-	if len(flowName) == 0 || len(windowValue) == 0 {
-		writer.WriteHeader(http.StatusBadRequest)
-		err := meterTemplate.Execute(writer, "flow and window are required parameters")
+	templateFormat := "html"
+	if len(req.FormValue("format")) > 0 {
+		templateFormat = req.FormValue("format")
+	}
+
+	var templateData struct {
+		Success bool
+		Data    interface{}
+	}
+	templateData.Success = false
+
+	defer func() {
+		var err error
+		if templateFormat == "html" {
+			if !templateData.Success {
+				writer.WriteHeader(http.StatusBadRequest)
+			}
+			err = meterHTMLTemplate.Execute(writer, templateData.Data)
+		} else if templateFormat == "json" {
+			var js []byte
+			js, err = json.Marshal(templateData)
+			writer.Header().Set("Content-Type", "application/json")
+			writer.Write(js)
+		} else {
+			writer.WriteHeader(http.StatusInternalServerError)
+			meterHTMLTemplate.Execute(writer, "unknown format")
+			err = fmt.Errorf("requested unknown format [%s]", templateFormat)
+		}
 		if err != nil {
 			logger.Print("template error:", err)
 		}
+	}()
+
+	flowName, windowValue := req.FormValue("flow"), req.FormValue("window")
+	if len(flowName) == 0 || len(windowValue) == 0 {
+		templateData.Data = "flow and window are required parameters"
 		return
 	}
 
 	win, err := strconv.ParseUint(windowValue, 10, 32)
 	if err != nil {
 		logger.Printf("can't parse value [%s] into uint32: %v", windowValue, err)
-		writer.WriteHeader(http.StatusBadRequest)
-		err = meterTemplate.Execute(writer, "window is cannot be converted to uint")
-		if err != nil {
-			logger.Print("template error:", err)
-		}
+		templateData.Data = "window is cannot be converted to uint"
 		return
 	}
 	window := uint(win)
 
-	var average float64
 	if fm, exists := flowMap[flowName]; exists {
-		average = fm.MovingAverage(window)
-		err = meterTemplate.Execute(writer, average)
-		if err != nil {
-			logger.Print("template error:", err)
-		}
+		average := fm.MovingAverage(window)
+		templateData.Success = true
+		templateData.Data = average
 		return
 	}
 
-	writer.WriteHeader(http.StatusBadRequest)
-	err = meterTemplate.Execute(writer, "unknown flow")
-	if err != nil {
-		logger.Print("template error:", err)
-	}
+	templateData.Data = "unknown flow"
 	return
 }
