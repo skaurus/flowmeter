@@ -1,7 +1,7 @@
 {
-    "receiveIP": "127.0.0.1",
+    "receiveIP": "10.0.100.54",
     "receivePort": 3569,
-    "httpIP": "127.0.0.1",
+    "httpIP": "0.0.0.0",
     "httpPort": 63837,
     "flows": {
         "_implicitCreate": false,
