@@ -440,7 +440,7 @@ func httpMeter(writer http.ResponseWriter, req *http.Request) {
 			FlowName string
 			Window   uint
 		}{"", average, flowName, window}
-		logger.Printf("%+v", templateData.Data)
+		//logger.Printf("%+v", templateData.Data)
 		return
 	}
 
