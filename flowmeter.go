@@ -28,7 +28,7 @@ type flowsConfig struct {
 	PredefinedFlows []flowConfig
 }
 
-//var config interface{}
+// var config interface{}
 // fields have to start with capital letter to be unmarshalled (marked it as public field)
 type Config struct {
 	// ip and udp port to receive data
@@ -137,7 +137,7 @@ func init() {
 	var configText []byte
 	if _, err := os.Stat(configFile); os.IsNotExist(err) {
 		usingDefaultConfig = true
-		//fmt.Fprintf(os.Stderr, "there is no config file [%s], will use defaults:\n%s\n", configFile, defaultConfig)
+		// fmt.Fprintf(os.Stderr, "there is no config file [%s], will use defaults:\n%s\n", configFile, defaultConfig)
 		configText = []byte(defaultConfig)
 	} else {
 		configText, err = ioutil.ReadFile(configFile)
@@ -151,7 +151,7 @@ func init() {
 		fmt.Fprintf(os.Stderr, "can't parse config [%s]: %v\n", configFile, err)
 		os.Exit(1)
 	}
-	//fmt.Printf("parsed config: %+v\n", config)
+	// fmt.Printf("parsed config: %+v\n", config)
 
 	// setup logger
 	mypath := strings.Split(os.Args[0], "/")
@@ -173,17 +173,17 @@ func init() {
 	for _, predefinedFlow := range config.Flows.PredefinedFlows {
 		initFlow(predefinedFlow.Name, predefinedFlow.Expire)
 	}
-	//fmt.Printf("flowMap init value: %+v\n", flowMap)
+	// fmt.Printf("flowMap init value: %+v\n", flowMap)
 
 	// init timeTicker (we store flow datapoints grouped by second; storage implemented as a ring buffer;
 	// for this we need to move a pointer to an active ring buffer index every second)
 	timeTicker = time.Tick(1 * time.Second)
 	go func() {
 		for _ = range timeTicker {
-			//fmt.Println("Tick at", t)
+			// fmt.Println("Tick at", t)
 			for _, fm := range flowMap {
 				fm.advanceHead()
-				//fmt.Printf("%+v\n\n", fm)
+				// fmt.Printf("%+v\n\n", fm)
 			}
 		}
 	}()
@@ -241,7 +241,7 @@ func main() {
 func receiveData(conn *net.UDPConn) {
 	// 3 seconds read timeout. Any Read call after given time will return with error.
 	// FIX: we shouldn't use timeout for network daemons, we should block until some data arrives
-	//conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	// conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 
 	const maxPayload = 512 // max payload size. UDP by itself allows packets up to 64k bytes
 	var payload [maxPayload + 1]byte
@@ -267,7 +267,7 @@ func receiveData(conn *net.UDPConn) {
 		return
 	}
 
-	//logger.Printf("received value [%.3f] for flow [%s]", value, flowName)
+	// logger.Printf("received value [%.3f] for flow [%s]", value, flowName)
 
 	if _, exists := flowMap[flowName]; exists {
 		// ok
@@ -284,7 +284,7 @@ func receiveData(conn *net.UDPConn) {
 	fm.addData(value)
 
 	// disable timeout
-	//conn.SetReadDeadline(time.Time{})
+	// conn.SetReadDeadline(time.Time{})
 }
 
 func httpStatus(writer http.ResponseWriter, req *http.Request) {
@@ -301,7 +301,7 @@ var meterHTMLTemplate = template.Must(template.New("meter").Parse(`<!doctype htm
         <meta charset="utf-8">
         <meta http-equiv="X-UA-Compatible" content="IE=edge">
         <title></title>
-        <script src="/js/jquery-2.1.1.min.js"></script>
+        <script src="/js/jquery-3.7.1.min.js"></script>
         <script src="/js/highcharts-4.0.4-custom.js"></script>
     </head>
     <body>
@@ -440,7 +440,7 @@ func httpMeter(writer http.ResponseWriter, req *http.Request) {
 			FlowName string
 			Window   uint
 		}{"", average, flowName, window}
-		//logger.Printf("%+v", templateData.Data)
+		// logger.Printf("%+v", templateData.Data)
 		return
 	}
 
